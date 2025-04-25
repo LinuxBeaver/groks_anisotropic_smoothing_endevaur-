@@ -208,35 +208,38 @@ process (GeglOperation       *operation,
         }
     }
 
-  /* CHANGED: Create GEGL node graph for post-processing */
+  /* CHANGED: Create GEGL node graph with input/output proxies */
   GeglNode *graph = gegl_node_new();
-  GeglNode *input_node = gegl_node_new_child (graph,
-                                              "operation", "gegl:buffer-source",
-                                              "buffer", temp_buffer,
-                                              NULL);
+  /* CHANGED: Use input and output proxies */
+  GeglNode *input_proxy = gegl_node_get_input_proxy (graph, "input");
+  GeglNode *output_proxy = gegl_node_get_output_proxy (graph, "output");
+
+  /* CHANGED: Create buffer-source for temporary buffer */
+  GeglNode *buffer_source = gegl_node_new_child (graph,
+                                                "operation", "gegl:buffer-source",
+                                                "buffer", temp_buffer,
+                                                NULL);
   GeglNode *opacity = gegl_node_new_child (graph,
                                           "operation", "gegl:opacity",
-                                          "value", 2.9,
+                                          "value", 3.0,
                                           NULL);
-  /* Note: lb:threshold-alpha may not be available; using gegl:threshold as fallback */
-  GeglNode *threshold = gegl_node_new_child (graph,
-                                            "operation", "lb:threshold-alpha",
-                                            NULL);
+  GeglNode *threshold_alpha = gegl_node_new_child (graph,
+                                                  "operation", "lb:threshold-alpha",
+                                                  NULL);
   GeglNode *median_blur = gegl_node_new_child (graph,
                                               "operation", "gegl:median-blur",
                                               "radius", 0,
                                               "abyss-policy", GEGL_ABYSS_NONE,
                                               NULL);
-  GeglNode *output_node = gegl_node_new_child (graph,
-                                               "operation", "gegl:buffer-sink",
-                                               "buffer", output,
-                                               NULL);
 
-  /* Connect nodes: input -> opacity -> threshold -> median-blur -> output */
-  gegl_node_link_many (input_node, opacity, threshold, median_blur, output_node, NULL);
+  /* CHANGED: Connect nodes: buffer-source -> opacity -> threshold-alpha -> median-blur -> output */
+  gegl_node_connect (buffer_source, "output", opacity, "input");
+  gegl_node_connect (opacity, "output", threshold_alpha, "input");
+  gegl_node_connect (threshold_alpha, "output", median_blur, "input");
+  gegl_node_connect (median_blur, "output", output_proxy, "input");
 
-  /* Process the node graph */
-  gegl_node_process (output_node);
+  /* CHANGED: Process the node graph */
+  gegl_node_process (output_proxy);
 
   /* Clean up */
   g_object_unref (temp_buffer);
