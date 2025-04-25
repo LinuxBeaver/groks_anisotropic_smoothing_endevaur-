@@ -208,35 +208,28 @@ process (GeglOperation       *operation,
         }
     }
 
-  /* CHANGED: Create GEGL node graph with input/output proxies */
+  /* CHANGED: Save temp_buffer to verify flower pattern */
+  gegl_buffer_save (temp_buffer, "flowers_temp.png", NULL);
+
+  /* CHANGED: Create GEGL node graph with single gegl:gegl node */
   GeglNode *graph = gegl_node_new();
-  /* CHANGED: Use input and output proxies */
-  GeglNode *input_proxy = gegl_node_get_input_proxy (graph, "input");
   GeglNode *output_proxy = gegl_node_get_output_proxy (graph, "output");
 
-  /* CHANGED: Create buffer-source for temporary buffer */
   GeglNode *buffer_source = gegl_node_new_child (graph,
                                                 "operation", "gegl:buffer-source",
                                                 "buffer", temp_buffer,
                                                 NULL);
-  GeglNode *opacity = gegl_node_new_child (graph,
-                                          "operation", "gegl:opacity",
-                                          "value", 3.0,
-                                          NULL);
-  GeglNode *threshold_alpha = gegl_node_new_child (graph,
-                                                  "operation", "lb:threshold-alpha",
-                                                  NULL);
-  GeglNode *median_blur = gegl_node_new_child (graph,
-                                              "operation", "gegl:median-blur",
-                                              "radius", 0,
-                                              "abyss-policy", GEGL_ABYSS_NONE,
-                                              NULL);
+#define aftergraph \
+" id=1 ref=1 gegl:opacity value=3 lb:threshold-alpha median-blur radius=0 abyss-policy=none  "\
 
-  /* CHANGED: Connect nodes: buffer-source -> opacity -> threshold-alpha -> median-blur -> output */
-  gegl_node_connect (buffer_source, "output", opacity, "input");
-  gegl_node_connect (opacity, "output", threshold_alpha, "input");
-  gegl_node_connect (threshold_alpha, "output", median_blur, "input");
-  gegl_node_connect (median_blur, "output", output_proxy, "input");
+
+  GeglNode *gegl_node = gegl_node_new_child (graph,
+                                             "operation", "gegl:gegl", "string", aftergraph,
+                       
+                                             NULL);
+
+  /* CHANGED: Connect nodes: buffer-source -> gegl:gegl -> output_proxy */
+  gegl_node_link_many (buffer_source, gegl_node, output_proxy, NULL);
 
   /* CHANGED: Process the node graph */
   gegl_node_process (output_proxy);
