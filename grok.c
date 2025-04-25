@@ -1,6 +1,6 @@
-/* 
+/* grok.c
  *
- * Copyright (C) 2006 Øyvind Kolås,
+ * Copyright (C) 2025 LinuxBeaver and contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,42 +19,42 @@
 #include "config.h"
 #include <glib/gi18n-lib.h>
 #include <math.h>
+#include <gegl.h>
+#include <stdio.h> /* For console debugging */
 
 #ifdef GEGL_PROPERTIES
 
-property_int (iterations, _("Iterations"), 10)
-  description (_("Number of iterations for the diffusion process"))
-  value_range (1, 20)
-  ui_range (1, 15)
+property_double (dot_size, _("Dot Size"), 30.0)
+  description (_("Average diameter of polka dots in pixels"))
+  value_range (5.0, 100.0)
+  ui_range (5.0, 50.0)
 
-property_double (strength, _("Strength"), 10.0)
-  description (_("Overall strength of the smoothing effect"))
-  value_range (0.0, 20.0)
-  ui_range (0.0, 15.0)
+property_double (dot_spacing, _("Dot Spacing"), 50.0)
+  description (_("Average spacing between dots in pixels"))
+  value_range (10.0, 200.0)
+  ui_range (10.0, 100.0)
 
-property_double (edge_threshold, _("Edge Threshold"), 0.9)
-  description (_("Threshold for edge preservation; higher values preserve sharper edges"))
-  value_range (0.0, 2.0)
-  ui_range (0.0, 1.5)
-
-property_double (anisotropy, _("Anisotropy"), 0.3)
-  description (_("Preference for smoothing along edges vs. across them"))
+property_double (size_variation, _("Size Variation"), 0.5)
+  description (_("Random variation in dot sizes (0.0 = uniform, 1.0 = high variation)"))
   value_range (0.0, 1.0)
-  ui_range (0.0, 0.8)
+  ui_range (0.0, 1.0)
 
-property_double (tensor_sigma, _("Tensor Smoothness"), 1.0)
-  description (_("Spatial scale for structure tensor smoothing"))
-  value_range (0.5, 2.0)
-  ui_range (0.5, 1.5)
+property_double (color_variation, _("Color Variation"), 0.2)
+  description (_("Random variation in dot colors"))
+  value_range (0.0, 0.5)
+  ui_range (0.0, 0.3)
 
-property_double (dt, _("Time Step"), 0.1)
-  description (_("Time step for diffusion stability"))
-  value_range (0.01, 0.25)
-  ui_range (0.01, 0.2)
+property_color (dot_color, _("Dot Color"), "#ff4040")
+  description (_("Base color of the polka dots"))
+
+property_int (seed, _("Random Seed"), 0)
+  description (_("Seed for random number generation"))
+  value_range (0, G_MAXINT)
+  ui_range (0, 1000)
 
 #else
 
-#define GEGL_OP_FILTER
+#define GEGL_OP_SOURCE
 #define GEGL_OP_NAME     grok
 #define GEGL_OP_C_SOURCE grok.c
 
@@ -63,276 +63,156 @@ property_double (dt, _("Time Step"), 0.1)
 static void
 prepare (GeglOperation *operation)
 {
-  const Babl *format = babl_format ("RGBA float");
-  gegl_operation_set_format (operation, "input", format);
-  gegl_operation_set_format (operation, "output", format);
+  gegl_operation_set_format (operation, "output", babl_format ("RGBA float"));
 }
 
 static GeglRectangle
 get_bounding_box (GeglOperation *operation)
 {
-  GeglRectangle *in_rect = gegl_operation_source_get_bounding_box (operation, "input");
-  return in_rect ? *in_rect : (GeglRectangle){0, 0, 0, 0};
+  /* Default to a reasonable size if no input; adjust as needed */
+  return (GeglRectangle){0, 0, 1024, 1024};
 }
 
-static GeglRectangle
-get_required_for_output (GeglOperation       *operation,
-                        const gchar         *input_pad,
-                        const GeglRectangle *roi)
+/* Simple noise function for random variation */
+static gfloat
+noise (gfloat x, gfloat y, gint seed)
 {
-  return get_bounding_box (operation);
-}
-
-/* Gaussian kernel for tensor smoothing */
-static void
-gaussian_blur (gfloat *data, gint width, gint height, gfloat sigma)
-{
-  gint kernel_size = (gint)(3.0f * sigma + 0.5f) * 2 + 1;
-  if (kernel_size < 3) kernel_size = 3;
-  gint k = kernel_size / 2;
-  gfloat *kernel = g_new (gfloat, kernel_size);
-  gfloat sum = 0.0f;
-
-  for (gint i = 0; i < kernel_size; i++)
-    {
-      gint x = i - k;
-      kernel[i] = expf (-(x * x) / (2.0f * sigma * sigma));
-      sum += kernel[i];
-    }
-  for (gint i = 0; i < kernel_size; i++)
-    kernel[i] /= sum;
-
-  gfloat *temp = g_new (gfloat, width * height);
-  for (gint y = 0; y < height; y++)
-    for (gint x = 0; x < width; x++)
-      {
-        gfloat value = 0.0f;
-        for (gint i = 0; i < kernel_size; i++)
-          {
-            gint nx = x + (i - k);
-            if (nx < 0) nx = 0;
-            if (nx >= width) nx = width - 1;
-            value += kernel[i] * data[y * width + nx];
-          }
-        temp[y * width + x] = value;
-      }
-
-  for (gint y = 0; y < height; y++)
-    for (gint x = 0; x < width; x++)
-      {
-        gfloat value = 0.0f;
-        for (gint i = 0; i < kernel_size; i++)
-          {
-            gint ny = y + (i - k);
-            if (ny < 0) ny = 0;
-            if (ny >= height) ny = height - 1;
-            value += kernel[i] * temp[ny * width + x];
-          }
-        data[y * width + x] = value;
-      }
-
-  g_free (temp);
-  g_free (kernel);
+  gfloat val = sinf (x * 12.9898f + y * 78.233f + seed) * 43758.5453f;
+  return val - floorf(val);
 }
 
 static gboolean
 process (GeglOperation       *operation,
-         GeglBuffer          *input,
          GeglBuffer          *output,
          const GeglRectangle *result,
          gint                 level)
 {
   GeglProperties *o = GEGL_PROPERTIES (operation);
   const Babl *format = babl_format ("RGBA float");
-  GeglBuffer *temp;
-  gint i;
+  GeglBufferIterator *iter;
 
-  if (result->width < 3 || result->height < 3)
+  if (result->width < 1 || result->height < 1)
+    return TRUE;
+
+  /* Clear output buffer to transparent */
+  iter = gegl_buffer_iterator_new (output, result, 0, format,
+                                  GEGL_ACCESS_WRITE, GEGL_ABYSS_NONE, 1);
+  while (gegl_buffer_iterator_next (iter))
     {
-      if (input != output)
-        gegl_buffer_copy (input, result, GEGL_ABYSS_CLAMP, output, result);
-      return TRUE;
+      gfloat *out_data = iter->items[0].data;
+      GeglRectangle roi = iter->items[0].roi;
+      gint x, y;
+
+      for (y = 0; y < roi.height; y++)
+        for (x = 0; x < roi.width; x++)
+          {
+            gint offset = (y * roi.width + x) * 4;
+            out_data[offset + 0] = 0.0f;
+            out_data[offset + 1] = 0.0f;
+            out_data[offset + 2] = 0.0f;
+            out_data[offset + 3] = 0.0f;
+          }
     }
 
-  temp = gegl_buffer_new (result, format);
-  gegl_buffer_copy (input, result, GEGL_ABYSS_CLAMP, temp, result);
+  /* Dot parameters */
+  gfloat spacing = o->dot_spacing;
+  gfloat base_radius = o->dot_size * 0.5f;
+  gint max_dots = 10000; /* Cap to prevent performance issues */
+  gint num_dots = MIN((gint)((result->width * result->height) / (spacing * spacing)), max_dots);
+  gdouble color[3];
+  gegl_color_get_rgba (o->dot_color, &color[0], &color[1], &color[2], NULL);
 
-  for (i = 0; i < o->iterations; i++)
+  /* Debug dot count */
+  fprintf(stderr, "Grok: Rendering %d polka dots with seed %d\n", num_dots, o->seed);
+
+  /* Render polka dots */
+  for (gint i = 0; i < num_dots; i++)
     {
-      GeglBufferIterator *iter = gegl_buffer_iterator_new (temp, result, 0, format,
-                                                         GEGL_ACCESS_READ, GEGL_ABYSS_CLAMP, 2);
-      gegl_buffer_iterator_add (iter, output, result, 0, format,
-                              GEGL_ACCESS_WRITE, GEGL_ABYSS_CLAMP);
+      /* Random dot center using noise with seed */
+      gfloat cx = result->x + result->width * noise(i, 0.0f, o->seed);
+      gfloat cy = result->y + result->height * noise(0.0f, i, o->seed);
+      cx = CLAMP(cx, result->x, result->x + result->width - 1);
+      cy = CLAMP(cy, result->y, result->y + result->height - 1);
 
+      /* Random size variation */
+      gfloat size_factor = 1.0f + o->size_variation * (noise(i, 1.0f, o->seed) - 0.5f);
+      gfloat radius = base_radius * size_factor;
+
+      /* Random color variation */
+      gfloat dot_color[3];
+      for (gint j = 0; j < 3; j++)
+        dot_color[j] = CLAMP((gfloat)color[j] + o->color_variation * (noise(i, (gfloat)j, o->seed) - 0.5f), 0.0f, 1.0f);
+
+      /* Define bounding box for the dot */
+      gint dot_size = (gint)(radius * 2.0f);
+      GeglRectangle dot_roi = {
+        .x = (gint)(cx - radius),
+        .y = (gint)(cy - radius),
+        .width = dot_size,
+        .height = dot_size
+      };
+      dot_roi.x = CLAMP(dot_roi.x, result->x, result->x + result->width - dot_roi.width);
+      dot_roi.y = CLAMP(dot_roi.y, result->y, result->y + result->height - dot_roi.height);
+
+      /* Render dot */
+      iter = gegl_buffer_iterator_new (output, &dot_roi, 0, format,
+                                      GEGL_ACCESS_READWRITE, GEGL_ABYSS_NONE, 1);
       while (gegl_buffer_iterator_next (iter))
         {
-          gfloat *in_data = iter->items[0].data;
-          gfloat *out_data = iter->items[1].data;
+          gfloat *out_data = iter->items[0].data;
           GeglRectangle roi = iter->items[0].roi;
-          GeglRectangle in_roi = roi;
-          in_roi.x -= 2;
-          in_roi.y -= 2;
-          in_roi.width += 4;
-          in_roi.height += 4;
-          gegl_rectangle_intersect (&in_roi, &in_roi, result);
+          gint x, y;
 
-          gfloat *in_expanded = g_new0 (gfloat, in_roi.width * in_roi.height * 4);
-          GeglBufferIterator *in_iter = gegl_buffer_iterator_new (temp, &in_roi, 0, format,
-                                                                GEGL_ACCESS_READ, GEGL_ABYSS_CLAMP, 1);
-          while (gegl_buffer_iterator_next (in_iter))
-            {
-              gfloat *data = in_iter->items[0].data;
-              GeglRectangle r = in_iter->items[0].roi;
-              for (gint y = 0; y < r.height; y++)
-                for (gint x = 0; x < r.width; x++)
-                  {
-                    gint src_idx = (y * r.width + x) * 4;
-                    gint dst_idx = ((y + r.y - in_roi.y) * in_roi.width + (x + r.x - in_roi.x)) * 4;
-                    memcpy (in_expanded + dst_idx, data + src_idx, 4 * sizeof (gfloat));
-                  }
-            }
-
-          gfloat *Ix2 = g_new0 (gfloat, in_roi.width * in_roi.height);
-          gfloat *Iy2 = g_new0 (gfloat, in_roi.width * in_roi.height);
-          gfloat *IxIy = g_new0 (gfloat, in_roi.width * in_roi.height);
-
-          for (gint y = 0; y < in_roi.height; y++)
-            for (gint x = 0; x < in_roi.width; x++)
-              {
-                gint idx = (y * in_roi.width + x);
-                gfloat Ix[4] = {0.0f}, Iy[4] = {0.0f};
-
-                if (x > 0 && x < in_roi.width - 1 && y > 0 && y < in_roi.height - 1)
-                  {
-                    for (gint j = 0; j < 4; j++)
-                      {
-                        Ix[j] = (in_expanded[(y * in_roi.width + (x + 1)) * 4 + j] -
-                                 in_expanded[(y * in_roi.width + (x - 1)) * 4 + j]) / 2.0f;
-                        Iy[j] = (in_expanded[((y + 1) * in_roi.width + x) * 4 + j] -
-                                 in_expanded[((y - 1) * in_roi.width + x) * 4 + j]) / 2.0f;
-                      }
-                  }
-
-                gfloat ix2 = 0.0f, iy2 = 0.0f, ixy = 0.0f;
-                for (gint j = 0; j < 4; j++)
-                  {
-                    ix2 += Ix[j] * Ix[j];
-                    iy2 += Iy[j] * Iy[j];
-                    ixy += Ix[j] * Iy[j];
-                  }
-                Ix2[idx] = ix2 / 4.0f;
-                Iy2[idx] = iy2 / 4.0f;
-                IxIy[idx] = ixy / 4.0f;
-              }
-
-          gaussian_blur (Ix2, in_roi.width, in_roi.height, o->tensor_sigma);
-          gaussian_blur (Iy2, in_roi.width, in_roi.height, o->tensor_sigma);
-          gaussian_blur (IxIy, in_roi.width, in_roi.height, o->tensor_sigma);
-
-          for (gint y = 0; y < roi.height; y++)
-            for (gint x = 0; x < roi.width; x++)
+          for (y = 0; y < roi.height; y++)
+            for (x = 0; x < roi.width; x++)
               {
                 gint offset = (y * roi.width + x) * 4;
-                gint in_x = x + roi.x - in_roi.x;
-                gint in_y = y + roi.y - in_roi.y;
-                gint idx = (in_y * in_roi.width + in_x);
-                gfloat sum[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+                gfloat px = x + roi.x;
+                gfloat py = y + roi.y;
 
-                gfloat a = Ix2[idx], b = IxIy[idx], c = Iy2[idx];
-                gfloat trace = a + c;
-                gfloat det = a * c - b * b;
-                gfloat discriminant = sqrtf (MAX (0.0f, trace * trace / 4.0f - det));
-                gfloat lambda1 = trace / 2.0f + discriminant;
-                gfloat lambda2 = trace / 2.0f - discriminant;
+                /* Compute distance from dot center */
+                gfloat dx = px - cx;
+                gfloat dy = py - cy;
+                gfloat dist = sqrtf (dx * dx + dy * dy);
 
-                gfloat coherence = 0.0f;
-                gfloat grad_mag = sqrtf (lambda1 + lambda2);
-                if (grad_mag > 1e-5f)
-                  coherence = ((lambda1 - lambda2) / (lambda1 + lambda2 + 1e-5f)) * expf (-1.0f / (grad_mag + 1e-5f));
-                coherence = CLAMP (coherence, 0.0f, 1.0f);
-
-                gfloat v1x = b, v1y = lambda1 - a;
-                gfloat norm = sqrtf (v1x * v1x + v1y * v1y);
-                if (norm < 1e-5f) { v1x = 1.0f; v1y = 0.0f; }
-                else { v1x /= norm; v1y /= norm; }
-                gfloat v2x = -v1y, v2y = v1x;
-
-                gfloat c1 = o->strength / (1.0f + o->edge_threshold * powf (coherence, 2.0f));
-                gfloat c2 = o->strength * (1.0f - o->anisotropy + o->anisotropy * expf (-powf (coherence, 2.0f)));
-                c1 = CLAMP (c1, 0.1f, o->strength);
-                c2 = CLAMP (c2, 0.1f, o->strength);
-
-                gfloat Dxx = c1 * v1x * v1x + c2 * v2x * v2x;
-                gfloat Dxy = c1 * v1x * v1y + c2 * v2x * v2y;
-                gfloat Dyy = c1 * v1y * v1y + c2 * v2y * v2y;
-
-                if (in_x > 0 && in_x < in_roi.width - 1 && in_y > 0 && in_y < in_roi.height - 1)
+                /* Circular dot with smooth edges */
+                gfloat alpha = CLAMP(1.0f - dist / radius, 0.0f, 1.0f);
+                if (alpha > 0.0f)
                   {
-                    for (gint j = 0; j < 4; j++)
+                    gfloat dest_alpha = out_data[offset + 3];
+                    gfloat final_alpha = alpha + dest_alpha * (1.0f - alpha);
+                    if (final_alpha > 0.0f)
                       {
-                        gfloat grad_x = (in_expanded[(in_y * in_roi.width + (in_x + 1)) * 4 + j] -
-                                         in_expanded[(in_y * in_roi.width + (in_x - 1)) * 4 + j]) / 2.0f;
-                        gfloat grad_y = (in_expanded[((in_y + 1) * in_roi.width + in_x) * 4 + j] -
-                                         in_expanded[((in_y - 1) * in_roi.width + in_x) * 4 + j]) / 2.0f;
-
-                        gfloat Dx_grad = Dxx * grad_x + Dxy * grad_y;
-                        gfloat Dy_grad = Dxy * grad_x + Dyy * grad_y;
-
-                        gfloat div_x = (in_expanded[(in_y * in_roi.width + (in_x + 1)) * 4 + j] -
-                                        2.0f * in_expanded[(in_y * in_roi.width + in_x) * 4 + j] +
-                                        in_expanded[(in_y * in_roi.width + (in_x - 1)) * 4 + j]) * Dxx +
-                                       (in_expanded[((in_y + 1) * in_roi.width + in_x) * 4 + j] -
-                                        in_expanded[((in_y - 1) * in_roi.width + in_x) * 4 + j]) * Dxy;
-                        gfloat div_y = (in_expanded[((in_y + 1) * in_roi.width + in_x) * 4 + j] -
-                                        2.0f * in_expanded[(in_y * in_roi.width + in_x) * 4 + j] +
-                                        in_expanded[((in_y - 1) * in_roi.width + in_x) * 4 + j]) * Dyy +
-                                       (in_expanded[(in_y * in_roi.width + (in_x + 1)) * 4 + j] -
-                                        in_expanded[(in_y * in_roi.width + (in_x - 1)) * 4 + j]) * Dxy;
-
-                        sum[j] = (div_x + div_y) / 2.0f;
-                        sum[j] = CLAMP (sum[j], -0.2f, 0.2f);
+                        for (gint j = 0; j < 3; j++)
+                          out_data[offset + j] = (dot_color[j] * alpha + out_data[offset + j] * dest_alpha * (1.0f - alpha)) / final_alpha;
+                        out_data[offset + 3] = final_alpha;
                       }
                   }
-
-                for (gint j = 0; j < 4; j++)
-                  {
-                    gfloat value = in_data[offset + j] + o->dt * sum[j];
-                    value = 0.9f * value + 0.1f * in_data[offset + j];
-                    out_data[offset + j] = CLAMP (value, 0.0f, 1.0f);
-                  }
               }
-
-          g_free (in_expanded);
-          g_free (Ix2);
-          g_free (Iy2);
-          g_free (IxIy);
         }
-
-      gegl_buffer_copy (output, result, GEGL_ABYSS_CLAMP, temp, result);
     }
 
-  g_object_unref (temp);
+  fprintf(stderr, "Grok: Polka dots rendered\n");
   return TRUE;
 }
 
 static void
 gegl_op_class_init (GeglOpClass *klass)
 {
-  GeglOperationClass     *operation_class = GEGL_OPERATION_CLASS (klass);
-  GeglOperationFilterClass *filter_class  = GEGL_OPERATION_FILTER_CLASS (klass);
+  GeglOperationClass *operation_class = GEGL_OPERATION_CLASS (klass);
+  GeglOperationSourceClass *source_class = GEGL_OPERATION_SOURCE_CLASS (klass);
 
-  operation_class->prepare         = prepare;
+  operation_class->prepare = prepare;
   operation_class->get_bounding_box = get_bounding_box;
-  operation_class->get_required_for_output = get_required_for_output;
-  filter_class->process            = process;
+  source_class->process = process;
 
   gegl_operation_class_set_keys (operation_class,
     "name",        "gegl:grok",
-    "title",       _("Anisotropic Smooth"),
-    "categories",  "blur:edge-preserving",
-    "description", _("Performs edge-preserving anisotropic smoothing inspired by G'MIC, minimizing outline artifacts"),
-    "gimp:menu-path", "<Image>/Filters/Blur",
-    "gimp:menu-label", _("Grok's GEGL plugin"),
+    "title",       _("Grok Polka Dots"),
+    "categories",  "render:pattern",
+    "description", _("Generates a random polka dots pattern with variable size and color"),
+    "gimp:menu-path", "<Image>/Filters/Render/Pattern/",
+    "gimp:menu-label", _("Grok Polka Dots"),
     NULL);
 }
 
