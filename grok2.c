@@ -35,18 +35,13 @@ property_color (color1, _("Color 1"), "#FFFFFF")
 property_color (color2, _("Color 2"), "#800080")
     description (_("Second color of the stripes"))
 
-
-
 #else
 
-#define GEGL_OP_META
+#define GEGL_OP_FILTER
 #define GEGL_OP_NAME     grok2
 #define GEGL_OP_C_SOURCE grok2.c
 
-#include "gegl-op.h"
-
-
-
+#endif /* GEGL_PROPERTIES */
 
 /* Operation implementation */
 static void
