@@ -6,12 +6,9 @@
 
 
 
-#include "gegl-op.h"
-
-
+/* Define properties */
 #ifdef GEGL_PROPERTIES
 
-/* Define properties */
 property_double (zoom, _("Zoom"), 0.5)
     description (_("Adjust the zoom level of the stripes"))
     value_range (0.0, 1.0)
@@ -39,12 +36,16 @@ property_color (color2, _("Color 2"), "#800080")
     description (_("Second color of the stripes"))
 
 
+
 #else
 
-/* Define the operation type, name, and source file */
-#define GEGL_OP_POINT_FILTER
-#define GEGL_OP_NAME grok2
-#define GEGL_OP_C_FILE "grok2.c"
+#define GEGL_OP_META
+#define GEGL_OP_NAME     grok2
+#define GEGL_OP_C_SOURCE grok2.c
+
+#include "gegl-op.h"
+
+
 
 
 /* Operation implementation */
