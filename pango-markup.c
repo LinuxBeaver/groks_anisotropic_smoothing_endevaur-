@@ -13,7 +13,7 @@
  * You should have received a copy of the GNU Lesser General Public
  * License along with GEGL; if not, see <https://www.gnu.org/licenses/>.
  *
- * Credit to Øvind Kolas (pippin) for major GEGL contributions
+ * Credit to Øyvind Kolås (pippin) for major GEGL contributions
  *           2022 Liam Quin (barefootliam) pango-markup
  *           2025 Modified for GUI sliders, font input, text size, letter spacing, and rotation
  */
